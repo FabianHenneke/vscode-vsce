@@ -37,11 +37,13 @@ const MinimatchOptions: minimatch.IOptions = { dot: true };
 
 export interface IInMemoryFile {
 	path: string;
+	explicitMode?: number;
 	readonly contents: Buffer | string;
 }
 
 export interface ILocalFile {
 	path: string;
+	explicitMode?: number;
 	readonly localPath: string;
 }
 
@@ -603,6 +605,40 @@ export class ChangelogProcessor extends MarkdownProcessor {
 	}
 }
 
+class EnsureFileModeProcessor extends BaseProcessor {
+	constructor(manifest: Manifest, private regexp: RegExp, private explicitMode: number) {
+		super(manifest);
+	}
+
+	async onFile(file: IFile): Promise<IFile> {
+		const path = util.normalize(file.path);
+
+		if (!this.regexp.test(path)) {
+			return file;
+		} else {
+			if (isInMemoryFile(file)) {
+				return {
+					path: file.path,
+					explicitMode: this.explicitMode,
+					contents: file.contents,
+				};
+			} else {
+				return {
+					path: file.path,
+					explicitMode: this.explicitMode,
+					localPath: file.localPath,
+				};
+			}
+		}
+	}
+}
+
+class EnsureManifestIsWritableProcessor extends EnsureFileModeProcessor {
+	constructor(manifest: Manifest) {
+		super(manifest, /^extension\/package.json$/i, 0o100644);
+	}
+}
+
 class LicenseProcessor extends BaseProcessor {
 	private didFindLicense = false;
 	filter: (name: string) => boolean;
@@ -1071,6 +1107,7 @@ export function processFiles(processors: IProcessor[], files: IFile[]): Promise<
 export function createDefaultProcessors(manifest: Manifest, options: IPackageOptions = {}): IProcessor[] {
 	return [
 		new ManifestProcessor(manifest),
+		new EnsureManifestIsWritableProcessor(manifest),
 		new TagsProcessor(manifest),
 		new ReadmeProcessor(manifest, options),
 		new ChangelogProcessor(manifest, options),
@@ -1104,8 +1141,10 @@ function writeVsix(files: IFile[], packagePath: string): Promise<void> {
 					const zip = new yazl.ZipFile();
 					files.forEach(f =>
 						isInMemoryFile(f)
-							? zip.addBuffer(typeof f.contents === 'string' ? Buffer.from(f.contents, 'utf8') : f.contents, f.path)
-							: zip.addFile(f.localPath, f.path)
+							? zip.addBuffer(typeof f.contents === 'string' ? Buffer.from(f.contents, 'utf8') : f.contents, f.path, {
+									mode: f.explicitMode,
+							  })
+							: zip.addFile(f.localPath, f.path, { mode: f.explicitMode })
 					);
 					zip.end();
 
